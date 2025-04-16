@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Al Papone: The Spudfather</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        body {
+            display: flex;
+            flex-direction: column; /* Stack canvas and controls vertically */
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #333; /* Dark background */
+            font-family: 'Press Start 2P', cursive;
+            color: #fff;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        canvas {
+            border: 5px solid #555;
+            /* Background color is now drawn in JS for layering */
+            display: block; /* Prevent extra space below canvas */
+            max-width: 100%;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+        #controls, #ui {
+            margin-top: 15px;
+            text-align: center;
+        }
+        button {
+            font-family: 'Press Start 2P', cursive;
+            padding: 10px 20px;
+            font-size: 1em;
+            cursor: pointer;
+            background-color: #FFA500; /* Orange */
+            color: #fff;
+            border: 3px solid #fff;
+            border-radius: 5px;
+            box-shadow: 0 5px 0 #CD853F; /* Peru - for 3D effect */
+            transition: all 0.1s ease;
+            margin: 0 10px; /* Spacing between buttons */
+        }
+        button:active {
+            transform: translateY(3px);
+            box-shadow: 0 2px 0 #CD853F;
+        }
+        #messageBox {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            font-size: 1.5em;
+            text-align: center;
+            display: none; /* Hidden by default */
+            z-index: 10;
+        }
+        #score {
+             font-size: 1.2em;
+             margin-bottom: 10px; /* Space above controls */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <div id="score">Score: 0</div>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+
+    <div id="controls">
+        <span>Controls: Left/Right = Move | ArrowUp = Jump | Space = Shoot</span>
+        <button id="resetButton" style="display: none;">Retry</button>
+    </div>
+
+    <div id="messageBox">
+        Game Over!<br>
+        <span id="finalScore"></span>
+    </div>
+
+    <script>
+        // Ensure DOM is loaded before starting
+        window.onload = function() {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            const scoreElement = document.getElementById('score');
+            const messageBox = document.getElementById('messageBox');
+            const finalScoreElement = document.getElementById('finalScore');
+            const resetButton = document.getElementById('resetButton');
+
+            // --- Game Constants ---
+            const GRAVITY = 0.5;
+            const PLAYER_SPEED = 4; // Slightly slower for platforming
+            const JUMP_FORCE = -11; // Adjusted jump force
+            const BULLET_SPEED = 7;
+            const ENEMY_BULLET_SPEED = 4;
+            const ENEMY_SPEED = 1; // Slower base speed for platform enemies
+            const ENEMY_SPAWN_RATE = 180; // Slower spawn rate initially
+            const ENEMY_SHOOT_INTERVAL = 120; // Frames between enemy shots
+            const TOPPING_SPAWN_RATE = 150;
+            const GROUND_LEVEL = canvas.height - 10; // Define ground y-coordinate
+
+            // --- Game State ---
+            let score = 0;
+            let keys = {};
+            let playerBullets = []; // Renamed for clarity
+            let enemyBullets = [];
+            let enemies = [];
+            let toppings = [];
+            let platforms = []; // Array to hold platform objects
+            let frameCount = 0;
+            let gameOver = false;
+            let gameRunning = true;
+
+            // --- Platform Definition ---
+            function definePlatforms() {
+                 platforms = [
+                    // Ground platform (acts as the floor)
+                    { x: 0, y: GROUND_LEVEL, width: canvas.width, height: 10, type: 'ground' },
+                    // Example platforms
+                    { x: 150, y: canvas.height - 100, width: 150, height: 10, type: 'brick' },
+                    { x: 400, y: canvas.height - 180, width: 200, height: 10, type: 'brick' },
+                    { x: 650, y: canvas.height - 280, width: 100, height: 10, type: 'brick' }
+                 ];
+            }
+
+            // --- Player Object ---
+            const player = {
+                x: 50,
+                y: GROUND_LEVEL - 60, // Start above ground
+                width: 40,
+                height: 50,
+                velocityY: 0,
+                isOnGround: false, // Track if player is on a surface
+                draw() {
+                    // Body (Potato Brown)
+                    ctx.fillStyle = '#A0522D'; // Sienna brown
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    // Hat (Lighter Beige/Yellow)
+                    ctx.fillStyle = '#F5F5DC'; // Beige
+                    ctx.fillRect(this.x + 5, this.y - 10, this.width - 10, 10); // Hat brim
+                    ctx.fillRect(this.x + 10, this.y - 20, this.width - 20, 10); // Hat top
+                    // Simple gun representation
+                    ctx.fillStyle = '#555'; // Dark grey
+                    ctx.fillRect(this.x + this.width -5, this.y + this.height / 2 - 3, 15, 6);
+                },
+                update() {
+                    // Apply Gravity
+                    this.velocityY += GRAVITY;
+                    this.y += this.velocityY;
+                    this.isOnGround = false; // Assume not on ground until collision check
+
+                    // --- Platform Collision ---
+                    platforms.forEach(platform => {
+                        // Check for vertical collision (landing on top)
+                        if (
+                            this.velocityY >= 0 && // Only check when falling or still
+                            this.x < platform.x + platform.width &&
+                            this.x + this.width > platform.x &&
+                            this.y + this.height >= platform.y &&
+                            this.y + this.height - this.velocityY <= platform.y // Check previous frame position to prevent sinking
+                        ) {
+                            this.y = platform.y - this.height; // Land on platform
+                            this.velocityY = 0;
+                            this.isOnGround = true;
+                        }
+                        // Optional: Add side collision if needed later
+                    });
+
+                    // Movement
+                    if (keys['ArrowLeft'] && this.x > 0) {
+                        this.x -= PLAYER_SPEED;
+                    }
+                    if (keys['ArrowRight'] && this.x < canvas.width - this.width) {
+                        this.x += PLAYER_SPEED;
+                    }
+                    // Jumping (Allow jump only when on a surface)
+                    if (keys['ArrowUp'] && this.isOnGround && !keys['ArrowUpHandled']) { // Use isOnGround flag
+                         this.velocityY = JUMP_FORCE;
+                         this.isOnGround = false; // Player is now in the air
+                         keys['ArrowUpHandled'] = true; // Prevent holding jump
+                    }
+                },
+                shoot() {
+                    // Create a player bullet instance
+                    playerBullets.push({
+                        x: this.x + this.width, // Start from front of player
+                        y: this.y + this.height / 2 - 2, // Middle of player height
+                        width: 10,
+                        height: 4,
+                        speed: BULLET_SPEED,
+                        draw() {
+                            ctx.fillStyle = 'yellow'; // Starch pellets!
+                            ctx.fillRect(this.x, this.y, this.width, this.height);
+                        },
+                        update() {
+                            this.x += this.speed;
+                        }
+                    });
+                }
+            };
+
+            // --- Enemy Object ---
+            class Enemy {
+                constructor(x, y, width, height, speed, type = 'carrot', platform = null) {
+                    this.x = x;
+                    this.y = y;
+                    this.width = width;
+                    this.height = height;
+                    this.speed = speed;
+                    this.type = type; // 'carrot' or 'potato_cop'
+                    this.platform = platform; // Platform the enemy is on (if any)
+                    this.shootTimer = Math.random() * ENEMY_SHOOT_INTERVAL; // Random initial delay
+                }
+
+                draw() {
+                     // Draw enemy based on type (same as before)
+                    if (this.type === 'carrot') {
+                        ctx.fillStyle = 'orange';
+                        ctx.fillRect(this.x, this.y, this.width, this.height);
+                        ctx.fillStyle = 'green';
+                        ctx.fillRect(this.x + this.width / 2 - 3 , this.y - 5, 6, 5);
+                    } else { // potato_cop
+                         ctx.fillStyle = '#CD853F'; // Peru
+                         ctx.fillRect(this.x, this.y, this.width, this.height);
+                         ctx.fillStyle = 'blue'; // Hat
+                         ctx.fillRect(this.x + this.width / 2 - 5, this.y - 8, 10, 8);
+                    }
+                }
+
+                update() {
+                    this.x -= this.speed; // Move left
+
+                    // Simple boundary check if on a platform
+                    if (this.platform && this.platform.type !== 'ground') {
+                        if (this.x < this.platform.x || this.x + this.width > this.platform.x + this.platform.width) {
+                            // Optional: Turn around or stop at edge (for now, just keep moving)
+                           // this.speed *= -1; // Example: turn around
+                        }
+                    }
+
+                    // --- Enemy Shooting Logic ---
+                    this.shootTimer--;
+                    if (this.shootTimer <= 0) {
+                        this.shoot();
+                        this.shootTimer = ENEMY_SHOOT_INTERVAL; // Reset timer
+                    }
+                }
+
+                shoot() {
+                    // Create an enemy bullet instance
+                    enemyBullets.push({
+                        x: this.x, // Start from front (left side) of enemy
+                        y: this.y + this.height / 2 - 2, // Middle height
+                        width: 8,
+                        height: 8, // Square bullet
+                        speed: ENEMY_BULLET_SPEED,
+                        draw() {
+                            ctx.fillStyle = 'red'; // Enemy bullets are red
+                            ctx.fillRect(this.x, this.y, this.width, this.height);
+                        },
+                        update() {
+                            this.x -= this.speed; // Move left
+                        }
+                    });
+                }
+            }
+
+             // --- Topping Object (Now Static) ---
+             class Topping {
+                constructor(x, y, radius, color, points) {
+                    this.x = x;
+                    this.y = y;
+                    this.radius = radius;
+                    this.color = color;
+                    this.points = points;
+                    this.width = radius * 2; // For collision detection
+                    this.height = radius * 2;
+                }
+
+                draw() {
+                    ctx.fillStyle = this.color;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                // No update needed for static toppings
+            }
+
+
+            // --- Event Listeners ---
+            window.addEventListener('keydown', (e) => {
+                keys[e.code] = true;
+                if (e.code === 'Space' && !keys['SpaceHandled']) {
+                    if (!gameOver) player.shoot();
+                    keys['SpaceHandled'] = true;
+                }
+                // ArrowUp handling moved to player update for isOnGround check
+            });
+
+            window.addEventListener('keyup', (e) => {
+                keys[e.code] = false;
+                if (e.code === 'Space') keys['SpaceHandled'] = false;
+                if (e.code === 'ArrowUp') keys['ArrowUpHandled'] = false; // Reset jump flag
+            });
+
+            resetButton.addEventListener('click', resetGame);
+
+            // --- Game Functions ---
+            function spawnEnemy() {
+                const enemyHeight = 45;
+                const enemyWidth = 35;
+                const speed = ENEMY_SPEED + Math.random() * 0.5;
+                const type = Math.random() < 0.6 ? 'carrot' : 'potato_cop';
+
+                // Choose a random platform (excluding ground initially for variety)
+                const spawnablePlatforms = platforms.filter(p => p.type !== 'ground');
+                let targetPlatform = platforms[0]; // Default to ground
+                if (spawnablePlatforms.length > 0 && Math.random() < 0.7) { // 70% chance to spawn on a higher platform
+                    targetPlatform = spawnablePlatforms[Math.floor(Math.random() * spawnablePlatforms.length)];
+                }
+
+                // Spawn at the right edge of the chosen platform or canvas
+                const spawnX = targetPlatform.type === 'ground' ? canvas.width : targetPlatform.x + targetPlatform.width - enemyWidth;
+                const spawnY = targetPlatform.y - enemyHeight; // Spawn on top of the platform
+
+                enemies.push(new Enemy(spawnX, spawnY, enemyWidth, enemyHeight, speed, type, targetPlatform));
+            }
+
+            function spawnTopping() {
+                 // Spawn toppings on platforms or ground
+                 const targetPlatform = platforms[Math.floor(Math.random() * platforms.length)];
+                 const radius = 6;
+                 // Place randomly along the width of the platform
+                 const spawnX = targetPlatform.x + Math.random() * (targetPlatform.width - radius * 2) + radius;
+                 const spawnY = targetPlatform.y - radius - 2; // Place just above the platform surface
+                 const color = Math.random() < 0.5 ? '#FFD700' : '#C0C0C0'; // Gold or Silver color
+                 const points = color === '#FFD700' ? 25 : 15;
+
+                 // Avoid spawning directly on player
+                 if (Math.abs(spawnX - (player.x + player.width / 2)) > player.width) {
+                    toppings.push(new Topping(spawnX, spawnY, radius, color, points));
+                 }
+            }
+
+            function updateGameObjects() {
+                // Update Player
+                player.update();
+
+                // Update Player Bullets & Remove off-screen
+                playerBullets.forEach((bullet, index) => {
+                    bullet.update();
+                    if (bullet.x > canvas.width) {
+                        playerBullets.splice(index, 1);
+                    }
+                });
+
+                 // Update Enemy Bullets & Remove off-screen
+                enemyBullets.forEach((bullet, index) => {
+                    bullet.update();
+                    if (bullet.x + bullet.width < 0) { // Check left edge
+                        enemyBullets.splice(index, 1);
+                    }
+                });
+
+                // Update Enemies & Remove off-screen
+                enemies.forEach((enemy, index) => {
+                    enemy.update();
+                    // Remove if they go way off screen left
+                    if (enemy.x + enemy.width < -50) {
+                        enemies.splice(index, 1);
+                    }
+                });
+
+                // Toppings are static, no update needed
+
+                // Spawn Logic
+                frameCount++;
+                if (frameCount % ENEMY_SPAWN_RATE === 0) {
+                    spawnEnemy();
+                }
+                if (frameCount % TOPPING_SPAWN_RATE === 0) {
+                    spawnTopping();
+                }
+
+                // Collision Detection
+                handleCollisions();
+            }
+
+            function drawBackground() {
+                // Sky
+                ctx.fillStyle = '#87CEEB'; // Sky blue
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                 // Simple distant hills/buildings (like Mario)
+                 ctx.fillStyle = '#A0522D'; // Darker brown for distant silhouette
+                 ctx.beginPath();
+                 ctx.moveTo(0, GROUND_LEVEL - 50);
+                 ctx.lineTo(100, GROUND_LEVEL - 100);
+                 ctx.lineTo(250, GROUND_LEVEL - 80);
+                 ctx.lineTo(400, GROUND_LEVEL - 120);
+                 ctx.lineTo(550, GROUND_LEVEL - 90);
+                 ctx.lineTo(700, GROUND_LEVEL - 110);
+                 ctx.lineTo(canvas.width, GROUND_LEVEL - 70);
+                 ctx.lineTo(canvas.width, GROUND_LEVEL);
+                 ctx.lineTo(0, GROUND_LEVEL);
+                 ctx.closePath();
+                 ctx.fill();
+
+
+                // Simple foreground buildings (inspired by reference image)
+                const buildingColors = ['#CD853F', '#A0522D', '#8B4513']; // Peru, Sienna, SaddleBrown
+                const buildingWidth = 80;
+                const buildingSpacing = 10;
+                let currentX = 30;
+
+                for (let i = 0; i < 5; i++) {
+                    const buildingHeight = 150 + Math.random() * 100; // Varying heights
+                    const color = buildingColors[i % buildingColors.length];
+
+                    // Building structure
+                    ctx.fillStyle = color;
+                    ctx.fillRect(currentX, GROUND_LEVEL - buildingHeight, buildingWidth, buildingHeight);
+
+                    // Simple windows
+                    ctx.fillStyle = '#555'; // Dark grey windows
+                    for (let row = 0; row < 4; row++) {
+                        for (let col = 0; col < 2; col++) {
+                            const winX = currentX + 15 + col * (buildingWidth / 2 - 10);
+                            const winY = GROUND_LEVEL - buildingHeight + 20 + row * 30;
+                            ctx.fillRect(winX, winY, 15, 20);
+                        }
+                    }
+                    currentX += buildingWidth + buildingSpacing;
+                }
+            }
+
+            function drawGameObjects() {
+                // Clear Canvas (now done by drawBackground)
+                // ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw Background first
+                drawBackground();
+
+                // Draw Platforms (simple rectangles for now)
+                platforms.forEach(platform => {
+                    ctx.fillStyle = platform.type === 'ground' ? '#8B4513' : '#D2691E'; // Brown for ground, Chocolate for bricks
+                    ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+                });
+
+                // Draw Player
+                player.draw();
+
+                // Draw Player Bullets
+                playerBullets.forEach(bullet => bullet.draw());
+
+                 // Draw Enemy Bullets
+                enemyBullets.forEach(bullet => bullet.draw());
+
+                // Draw Enemies
+                enemies.forEach(enemy => enemy.draw());
+
+                // Draw Toppings
+                toppings.forEach(topping => topping.draw());
+            }
+
+             function handleCollisions() {
+                // Player Bullet-Enemy Collisions
+                playerBullets.forEach((bullet, bulletIndex) => {
+                    enemies.forEach((enemy, enemyIndex) => {
+                        if (
+                            bullet.x < enemy.x + enemy.width &&
+                            bullet.x + bullet.width > enemy.x &&
+                            bullet.y < enemy.y + enemy.height &&
+                            bullet.y + bullet.height > enemy.y
+                        ) {
+                            enemies.splice(enemyIndex, 1);
+                            playerBullets.splice(bulletIndex, 1);
+                            score += 50;
+                            updateScoreDisplay();
+                        }
+                    });
+                });
+
+                // Player-Enemy Collisions
+                enemies.forEach((enemy) => {
+                    if (
+                        player.x < enemy.x + enemy.width &&
+                        player.x + player.width > enemy.x &&
+                        player.y < enemy.y + enemy.height &&
+                        player.y + player.height > enemy.y
+                    ) {
+                        triggerGameOver();
+                    }
+                });
+
+                 // Player-Enemy Bullet Collisions
+                 enemyBullets.forEach((bullet, bulletIndex) => {
+                     if (
+                         player.x < bullet.x + bullet.width &&
+                         player.x + player.width > bullet.x &&
+                         player.y < bullet.y + bullet.height &&
+                         player.y + player.height > bullet.y
+                     ) {
+                         enemyBullets.splice(bulletIndex, 1); // Remove bullet
+                         triggerGameOver();
+                     }
+                 });
+
+                 // Player-Topping Collisions (Rectangle collision for simplicity)
+                toppings.forEach((topping, index) => {
+                     if (
+                         player.x < topping.x + topping.width &&
+                         player.x + player.width > topping.x &&
+                         player.y < topping.y + topping.height &&
+                         player.y + player.height > topping.y
+                     ) {
+                         toppings.splice(index, 1); // Remove topping
+                         score += topping.points;
+                         updateScoreDisplay();
+                     }
+                 });
+            }
+
+            function updateScoreDisplay() {
+                scoreElement.textContent = `Score: ${score}`;
+            }
+
+            function triggerGameOver() {
+                if (gameOver) return; // Prevent multiple triggers
+                gameOver = true;
+                gameRunning = false;
+                finalScoreElement.textContent = `Final Score: ${score}`;
+                messageBox.style.display = 'block';
+                resetButton.style.display = 'inline-block';
+            }
+
+             function resetGame() {
+                score = 0;
+                keys = {};
+                playerBullets = [];
+                enemyBullets = []; // Clear enemy bullets
+                enemies = [];
+                toppings = [];
+                frameCount = 0;
+                gameOver = false;
+                gameRunning = true;
+
+                // Reset player position
+                player.x = 50;
+                player.y = GROUND_LEVEL - 60; // Reset starting position
+                player.velocityY = 0;
+                player.isOnGround = false;
+
+                // Redefine platforms and clear/respawn initial toppings/enemies if needed
+                definePlatforms(); // Make sure platforms are reset
+                // Optionally spawn initial items here if desired
+
+                messageBox.style.display = 'none';
+                resetButton.style.display = 'none';
+                updateScoreDisplay();
+                gameLoop(); // Restart the loop
+            }
+
+
+            // --- Game Loop ---
+            function gameLoop() {
+                if (!gameRunning) return;
+
+                updateGameObjects();
+                drawGameObjects();
+
+                requestAnimationFrame(gameLoop);
+            }
+
+            // --- Initial Setup ---
+            definePlatforms(); // Define platforms at the start
+            updateScoreDisplay();
+            resetButton.style.display = 'none';
+            messageBox.style.display = 'none';
+
+            // Start the Game!
+            gameLoop();
+        }; // End window.onload
+    </script>
+
+</body>
+</html>
